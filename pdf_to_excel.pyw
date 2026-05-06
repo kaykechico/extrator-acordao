@@ -3,8 +3,9 @@ import logging
 import re
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import freeze_support
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Dict, List, Optional
 
 import fitz
 import pandas as pd
@@ -90,10 +91,13 @@ def extract_text_from_pdf(pdf_path: Path) -> Optional[Dict[str, str]]:
 
 
 def get_pdf_files(input_dir: Path, recursive: bool = False) -> List[Path]:
-    if recursive:
-        return sorted(input_dir.rglob("*.pdf"))
+    file_iterator = input_dir.rglob("*") if recursive else input_dir.glob("*")
 
-    return sorted(input_dir.glob("*.pdf"))
+    return sorted(
+        file_path
+        for file_path in file_iterator
+        if file_path.is_file() and file_path.suffix.lower() == ".pdf"
+    )
 
 
 def process_directory(
@@ -156,7 +160,8 @@ def export_to_excel(data: List[Dict[str, str]], output_path: Path) -> None:
 
         df = df[columns_order]
 
-        df.to_excel(output_path, index=False, engine="openpyxl")
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="Dados", index=False)
 
         logger.info(f"Arquivo Excel gerado com sucesso em: {output_path.resolve()}")
 
@@ -208,11 +213,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    if args.workers is not None and args.workers < 1:
+        logger.error("O parâmetro --workers deve ser maior ou igual a 1.")
+        return
+
     args.input.mkdir(parents=True, exist_ok=True)
 
     start_time = time.perf_counter()
 
-    logger.info("--- START: Extração de PDFs e Geração de Excel ---")
+    logger.info("Extração de PDFs e Geração de Excel")
     logger.info(f"Diretório de entrada: {args.input.resolve()}")
     logger.info(f"Arquivo de saída: {args.output.resolve()}")
 
@@ -227,10 +236,13 @@ def main() -> None:
     end_time = time.perf_counter()
 
     logger.info(f"Total exportado: {len(extracted_data)}")
-    logger.info(f"--- END: Finalizado. Tempo de execução: {end_time - start_time:.3f}s ---")
-
-    input("\nPressione ENTER para fechar a janela...")
+    logger.info(f"Finalizado. Tempo de execução: {end_time - start_time:.3f}s ---")
 
 
 if __name__ == "__main__":
-    main()
+    freeze_support()
+
+    try:
+        main()
+    finally:
+        input("\nPressione ENTER para fechar a janela...")
