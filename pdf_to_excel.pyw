@@ -1,6 +1,9 @@
 import argparse
+import ctypes
 import logging
+import os
 import re
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import freeze_support
@@ -11,20 +14,38 @@ import fitz
 import pandas as pd
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-
-logger = logging.getLogger(__name__)
-
-
 CNJ_PATTERN = re.compile(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b")
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
 EXCEL_CELL_LIMIT = 32767
 TRUNCATION_WARNING = " ... [AVISO: TEXTO TRUNCADO DEVIDO AO LIMITE DE 32.767 CARACTERES DO EXCEL]"
+
+logger = logging.getLogger(__name__)
+
+
+def setup_console() -> None:
+    if os.name != "nt":
+        return
+
+    kernel32 = ctypes.windll.kernel32
+
+    if kernel32.GetConsoleWindow():
+        return
+
+    kernel32.AllocConsole()
+
+    sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+    sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+    sys.stdin = open("CONIN$", "r", encoding="utf-8")
+
+
+def setup_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
 
 
 def clean_extracted_text(text: str) -> str:
@@ -56,7 +77,6 @@ def extract_text_from_pdf(pdf_path: Path) -> Optional[Dict[str, str]]:
 
         with fitz.open(pdf_path) as doc:
             if doc.is_encrypted:
-                logger.error(f"Arquivo protegido por senha ignorado: {pdf_path.name}")
                 return None
 
             for page in doc:
@@ -66,9 +86,6 @@ def extract_text_from_pdf(pdf_path: Path) -> Optional[Dict[str, str]]:
 
         raw_text = " ".join(text_content)
         cleaned_text = clean_extracted_text(raw_text)
-
-        if not cleaned_text:
-            logger.warning(f"O arquivo parece estar vazio ou é apenas imagem: {pdf_path.name}")
 
         cnj_number = find_cnj_number(cleaned_text)
 
@@ -81,12 +98,7 @@ def extract_text_from_pdf(pdf_path: Path) -> Optional[Dict[str, str]]:
             "Título do Arquivo": pdf_path.name
         }
 
-    except fitz.FileDataError:
-        logger.error(f"Arquivo corrompido ou de formato inválido ignorado: {pdf_path.name}")
-        return None
-
-    except Exception as e:
-        logger.error(f"Erro inesperado ao processar '{pdf_path.name}': {e}")
+    except Exception:
         return None
 
 
@@ -130,9 +142,12 @@ def process_directory(
             try:
                 result = future.result()
 
-                if result is not None:
-                    dataset.append(result)
-                    logger.info(f"Processado com sucesso: {pdf_path.name}")
+                if result is None:
+                    logger.warning(f"Ignorado ou sem texto extraível: {pdf_path.name}")
+                    continue
+
+                dataset.append(result)
+                logger.info(f"Processado com sucesso: {pdf_path.name}")
 
             except Exception as e:
                 logger.error(f"Falha crítica ao processar {pdf_path.name}: {e}")
@@ -211,6 +226,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    setup_console()
+    setup_logging()
+
     args = parse_args()
 
     if args.workers is not None and args.workers < 1:
@@ -221,7 +239,7 @@ def main() -> None:
 
     start_time = time.perf_counter()
 
-    logger.info("Extração de PDFs e Geração de Excel")
+    logger.info("--- START: Extração de PDFs e Geração de Excel ---")
     logger.info(f"Diretório de entrada: {args.input.resolve()}")
     logger.info(f"Arquivo de saída: {args.output.resolve()}")
 
@@ -236,7 +254,7 @@ def main() -> None:
     end_time = time.perf_counter()
 
     logger.info(f"Total exportado: {len(extracted_data)}")
-    logger.info(f"Finalizado. Tempo de execução: {end_time - start_time:.3f}s ---")
+    logger.info(f"--- END: Finalizado. Tempo de execução: {end_time - start_time:.3f}s ---")
 
 
 if __name__ == "__main__":

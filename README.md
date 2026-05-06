@@ -1,17 +1,19 @@
-# Extrator de Acórdãos: De PDF para Excel
+# Extrator de Acórdãos: PDF para Excel
 
-Este projeto é uma solução em Python desenvolvida para automatizar a extração de dados de documentos jurídicos em PDF. O script processa os arquivos em lote, higieniza o texto, localiza o número do processo (padrão CNJ) e consolida as informações em uma planilha Excel de forma rápida e organizada.
+Automação em Python para extrair texto de documentos jurídicos em PDF, identificar o número do processo no padrão CNJ e consolidar os dados em uma planilha Excel.
 
-## ✨ Principais Funcionalidades
+O projeto foi criado para processar arquivos em lote dentro de uma pasta, limpar o texto extraído e gerar um arquivo `.xlsx` organizado com as informações principais.
 
-* **Alta Performance:** Utiliza a biblioteca `PyMuPDF` (`fitz`), permitindo o processamento de centenas de páginas em poucos segundos.
-* **Busca Inteligente (Fallback):** Localiza automaticamente processos no padrão CNJ dentro do texto. Caso o PDF seja apenas uma imagem (documento escaneado sem OCR), o script tenta extrair a informação a partir do nome do arquivo.
-* **Limpeza de Dados:** Remove caracteres inválidos, espaços duplos e marcações que poderiam corromper a estrutura do arquivo Excel.
-* **Prevenção de Falhas:** O Excel possui um limite rígido de 32.767 caracteres por célula. O script identifica textos que ultrapassam esse limite, realiza um corte seguro e insere um aviso, evitando que a automação seja interrompida.
+## Funcionalidades
 
-## 🛠️ Pré-requisitos
-
-Certifique-se de ter o Python instalado em sua máquina. Para instalar as bibliotecas necessárias, execute o comando abaixo no seu terminal:
-
-```bash
-pip install PyMuPDF pandas openpyxl
+- Extrai texto de arquivos PDF usando PyMuPDF.
+- Localiza automaticamente números de processo no padrão CNJ.
+- Usa o nome do arquivo como fallback quando o CNJ não é encontrado no conteúdo.
+- Remove caracteres inválidos que podem quebrar a geração do Excel.
+- Normaliza espaços e quebras de linha.
+- Evita erro no Excel ao limitar textos acima de 32.767 caracteres por célula.
+- Processa múltiplos PDFs em paralelo para melhorar a performance.
+- Aceita arquivos com extensão `.pdf`, `.PDF` e variações similares.
+- Permite busca opcional em subpastas.
+- Gera uma planilha Excel com aba chamada `Dados`.
+- Exibe uma janela de console com logs mesmo quando executado como `.pyw`.
