@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import ctypes
 import logging
 import os
@@ -6,6 +7,7 @@ import re
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from multiprocessing import freeze_support
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -22,6 +24,17 @@ TRUNCATION_WARNING = " ... [AVISO: TEXTO TRUNCADO DEVIDO AO LIMITE DE 32.767 CAR
 
 logger = logging.getLogger(__name__)
 
+_console_handles: List = []
+
+
+@dataclass
+class ExtractionResult:
+
+    status: str
+    data: Optional[Dict[str, str]] = None
+    error_message: str = ""
+    filename: str = ""
+
 
 def setup_console() -> None:
     if os.name != "nt":
@@ -32,16 +45,43 @@ def setup_console() -> None:
     if kernel32.GetConsoleWindow():
         return
 
-    kernel32.AllocConsole()
+    if not kernel32.AllocConsole():
+        return
 
-    sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
-    sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)
-    sys.stdin = open("CONIN$", "r", encoding="utf-8")
+    try:
+        stdout_handle = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+        stderr_handle = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+        stdin_handle = open("CONIN$", "r", encoding="utf-8")
+
+        sys.stdout = stdout_handle
+        sys.stderr = stderr_handle
+        sys.stdin = stdin_handle
+
+        _console_handles.extend([stdout_handle, stderr_handle, stdin_handle])
+
+        def _cleanup_console():
+            for handle in _console_handles:
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+
+        atexit.register(_cleanup_console)
+
+    except OSError:
+        pass
 
 
-def setup_logging() -> None:
+def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
+    if quiet:
+        level = logging.WARNING
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)]
@@ -57,7 +97,7 @@ def clean_extracted_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
 
     if len(text) > EXCEL_CELL_LIMIT:
-        allowed_length = EXCEL_CELL_LIMIT - len(TRUNCATION_WARNING)
+        allowed_length = max(0, EXCEL_CELL_LIMIT - len(TRUNCATION_WARNING))
         text = text[:allowed_length] + TRUNCATION_WARNING
 
     return text
@@ -71,13 +111,16 @@ def find_cnj_number(text: str) -> str:
     return match.group(0) if match else "Não localizado"
 
 
-def extract_text_from_pdf(pdf_path: Path) -> Optional[Dict[str, str]]:
+def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
     try:
         text_content: List[str] = []
 
         with fitz.open(pdf_path) as doc:
             if doc.is_encrypted:
-                return None
+                return ExtractionResult(
+                    status="encrypted",
+                    filename=pdf_path.name
+                )
 
             for page in doc:
                 page_text = page.get_text("text")
@@ -87,19 +130,33 @@ def extract_text_from_pdf(pdf_path: Path) -> Optional[Dict[str, str]]:
         raw_text = " ".join(text_content)
         cleaned_text = clean_extracted_text(raw_text)
 
+        if not cleaned_text:
+            return ExtractionResult(
+                status="empty",
+                filename=pdf_path.name
+            )
+
         cnj_number = find_cnj_number(cleaned_text)
 
         if cnj_number == "Não localizado":
             cnj_number = find_cnj_number(pdf_path.name)
 
-        return {
-            "Número do Processo": cnj_number,
-            "Conteúdo": cleaned_text,
-            "Título do Arquivo": pdf_path.name
-        }
+        return ExtractionResult(
+            status="success",
+            data={
+                "Número do Processo": cnj_number,
+                "Conteúdo": cleaned_text,
+                "Título do Arquivo": pdf_path.name
+            },
+            filename=pdf_path.name
+        )
 
-    except Exception:
-        return None
+    except Exception as e:
+        return ExtractionResult(
+            status="error",
+            error_message=str(e),
+            filename=pdf_path.name
+        )
 
 
 def get_pdf_files(input_dir: Path, recursive: bool = False) -> List[Path]:
@@ -122,13 +179,16 @@ def process_directory(
         return []
 
     pdf_files = get_pdf_files(input_dir, recursive=recursive)
+    total = len(pdf_files)
 
-    logger.info(f"Total de PDFs encontrados: {len(pdf_files)}")
+    logger.info(f"Total de PDFs encontrados: {total}")
 
     if not pdf_files:
         return []
 
     dataset: List[Dict[str, str]] = []
+    counters = {"success": 0, "encrypted": 0, "empty": 0, "error": 0}
+    processed = 0
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         future_to_pdf = {
@@ -138,21 +198,46 @@ def process_directory(
 
         for future in as_completed(future_to_pdf):
             pdf_path = future_to_pdf[future]
+            processed += 1
 
             try:
                 result = future.result()
+                counters[result.status] += 1
 
-                if result is None:
-                    logger.warning(f"Ignorado ou sem texto extraível: {pdf_path.name}")
-                    continue
-
-                dataset.append(result)
-                logger.info(f"Processado com sucesso: {pdf_path.name}")
+                if result.status == "success":
+                    dataset.append(result.data)
+                    logger.info(
+                        f"[{processed}/{total}] Processado com sucesso: {result.filename}"
+                    )
+                elif result.status == "encrypted":
+                    logger.warning(
+                        f"[{processed}/{total}] PDF criptografado, ignorado: {result.filename}"
+                    )
+                elif result.status == "empty":
+                    logger.warning(
+                        f"[{processed}/{total}] Sem texto extraível: {result.filename}"
+                    )
+                elif result.status == "error":
+                    logger.error(
+                        f"[{processed}/{total}] Erro ao processar "
+                        f"{result.filename}: {result.error_message}"
+                    )
 
             except Exception as e:
-                logger.error(f"Falha crítica ao processar {pdf_path.name}: {e}")
+                counters["error"] += 1
+                logger.error(
+                    f"[{processed}/{total}] Falha crítica ao processar "
+                    f"{pdf_path.name}: {e}"
+                )
 
     dataset.sort(key=lambda item: item["Título do Arquivo"].lower())
+
+    logger.info("--- Resumo do Processamento ---")
+    logger.info(f"  Total encontrados:  {total}")
+    logger.info(f"  Sucesso:            {counters['success']}")
+    logger.info(f"  Criptografados:     {counters['encrypted']}")
+    logger.info(f"  Sem texto:          {counters['empty']}")
+    logger.info(f"  Erros:              {counters['error']}")
 
     return dataset
 
@@ -222,24 +307,54 @@ def parse_args() -> argparse.Namespace:
         help="Número de processos paralelos."
     )
 
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Sobrescreve o arquivo Excel de saída caso já exista."
+    )
+
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Exibe logs detalhados (nível DEBUG)."
+    )
+
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Exibe apenas avisos e erros."
+    )
+
     return parser.parse_args()
 
 
 def main() -> None:
     setup_console()
-    setup_logging()
 
     args = parse_args()
 
+    if args.verbose and args.quiet:
+        print("[ERRO] Não é possível usar --verbose e --quiet ao mesmo tempo.")
+        return
+
+    setup_logging(verbose=args.verbose, quiet=args.quiet)
+
     if args.workers is not None and args.workers < 1:
         logger.error("O parâmetro --workers deve ser maior ou igual a 1.")
+        return
+
+    if args.output.exists() and not args.force:
+        logger.error(
+            f"O arquivo de saída já existe: {args.output.resolve()}\n"
+            f"Use --force para sobrescrever."
+        )
         return
 
     args.input.mkdir(parents=True, exist_ok=True)
 
     start_time = time.perf_counter()
 
-    logger.info("--- START: Extração de PDFs e Geração de Excel ---")
+    logger.info("--- Extração de PDFs e Geração de Excel ---")
     logger.info(f"Diretório de entrada: {args.input.resolve()}")
     logger.info(f"Arquivo de saída: {args.output.resolve()}")
 
@@ -254,7 +369,7 @@ def main() -> None:
     end_time = time.perf_counter()
 
     logger.info(f"Total exportado: {len(extracted_data)}")
-    logger.info(f"--- END: Finalizado. Tempo de execução: {end_time - start_time:.3f}s ---")
+    logger.info(f"--- Finalizado. Tempo de execução: {end_time - start_time:.3f}s ---")
 
 
 if __name__ == "__main__":
@@ -263,4 +378,7 @@ if __name__ == "__main__":
     try:
         main()
     finally:
-        input("\nPressione ENTER para fechar a janela...")
+        try:
+            input("\nPressione ENTER para fechar a janela...")
+        except (EOFError, OSError):
+            pass
