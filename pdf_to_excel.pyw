@@ -1,4 +1,3 @@
-import atexit
 import ctypes
 import logging
 import re
@@ -19,10 +18,20 @@ CNJ_PATTERN = re.compile(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b")
 CNJ_CLEAN_PATTERN = re.compile(r"\b\d{20}\b")
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 UNDERSCORES_PATTERN = re.compile(r"_{3,}")
+DIGITS_20_PATTERN = re.compile(r"\d{20}")
 
 logger = logging.getLogger(__name__)
 
 _console_handles: List = []
+
+
+def _cleanup_console() -> None:
+    for handle in _console_handles:
+        try:
+            handle.close()
+        except OSError:
+            pass
+    _console_handles.clear()
 
 
 @dataclass
@@ -55,16 +64,8 @@ def setup_console() -> None:
         sys.stderr = stderr_handle
         sys.stdin = stdin_handle
 
+        _console_handles.clear()
         _console_handles.extend([stdout_handle, stderr_handle, stdin_handle])
-
-        def _cleanup_console():
-            for handle in _console_handles:
-                try:
-                    handle.close()
-                except OSError:
-                    pass
-
-        atexit.register(_cleanup_console)
 
     except OSError:
         pass
@@ -83,30 +84,26 @@ def setup_logging() -> None:
 def clean_extracted_text(text: str) -> str:
     if not text:
         return ""
-
     text = ILLEGAL_XML_CHARS.sub("", text)
     text = UNDERSCORES_PATTERN.sub(" ", text)
-    return " ".join(text.split())
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 def find_cnj_number(text: str) -> str:
     if not text:
         return "Não localizado"
-
     match = CNJ_PATTERN.search(text)
     if match:
         return match.group(0)
-
     match_clean = CNJ_CLEAN_PATTERN.search(text)
     if match_clean:
         d = match_clean.group(0)
         return f"{d[:7]}-{d[7:9]}.{d[9:13]}.{d[13]}.{d[14:16]}.{d[16:]}"
-
-    if len(text) < 300:
-        digits = "".join(c for c in text if c.isdigit())
-        if len(digits) == 20:
-            return f"{digits[:7]}-{digits[7:9]}.{digits[9:13]}.{digits[13]}.{digits[14:16]}.{digits[16:]}"
-
+    match_any = DIGITS_20_PATTERN.search(text)
+    if match_any:
+        d = match_any.group(0)
+        return f"{d[:7]}-{d[7:9]}.{d[9:13]}.{d[13]}.{d[14:16]}.{d[16:]}"
     return "Não localizado"
 
 
@@ -126,8 +123,7 @@ def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
                 if page_text:
                     text_content.append(page_text)
 
-        raw_text = " ".join(text_content)
-        cleaned_text = clean_extracted_text(raw_text)
+        cleaned_text = clean_extracted_text(" ".join(text_content))
 
         if not cleaned_text:
             return ExtractionResult(
@@ -135,10 +131,9 @@ def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
                 filename=pdf_path.name
             )
 
-        cnj_number = find_cnj_number(cleaned_text)
-
+        cnj_number = find_cnj_number(pdf_path.name)
         if cnj_number == "Não localizado":
-            cnj_number = find_cnj_number(pdf_path.name)
+            cnj_number = find_cnj_number(cleaned_text)
 
         return ExtractionResult(
             status="success",
@@ -156,11 +151,6 @@ def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
             error_message=str(e),
             filename=pdf_path.name
         )
-    finally:
-        try:
-            fitz.tools.shrink_memory()
-        except Exception:
-            pass
 
 
 def get_pdf_files(input_dir: Path) -> List[Path]:
@@ -189,6 +179,8 @@ def process_directory(input_dir: Path) -> List[Dict[str, str]]:
 
     use_parallel = total > 2
 
+    log_interval = max(1, min(50, total // 10))
+
     def handle_result(result: ExtractionResult) -> None:
         nonlocal processed
         processed += 1
@@ -210,7 +202,6 @@ def process_directory(input_dir: Path) -> List[Dict[str, str]]:
                 f"[{processed}/{total}] Erro ao processar {result.filename}: {result.error_message}"
             )
 
-        log_interval = max(1, min(50, total // 10))
         if processed % log_interval == 0 or processed == total:
             logger.info(f"Progresso: {processed}/{total} arquivos ({processed * 100 // total}%)")
 
@@ -272,7 +263,7 @@ def export_to_excel(data: List[Dict[str, str]], output_path: Path) -> None:
             "Título do Arquivo"
         ]
 
-        df = df[columns_order]
+        df = df.reindex(columns=columns_order, fill_value="")
 
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="Dados", index=False)
@@ -296,7 +287,9 @@ def main() -> None:
     input_path = Path("./pdfs")
     output_path = Path("./processos_extraidos.xlsx")
 
-    input_path.mkdir(parents=True, exist_ok=True)
+    if not input_path.is_dir():
+        input_path.mkdir(parents=True, exist_ok=True)
+        logger.warning(f"Diretório de entrada criado: {input_path.resolve()}. Coloque os PDFs e execute novamente.")
 
     start_time = time.perf_counter()
 
@@ -316,10 +309,10 @@ def main() -> None:
 
 if __name__ == "__main__":
     freeze_support()
-
     try:
         main()
     finally:
+        _cleanup_console()
         try:
             input("\nPressione ENTER para fechar a janela...")
         except (EOFError, OSError):
