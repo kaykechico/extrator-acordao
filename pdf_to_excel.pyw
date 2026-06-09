@@ -1,13 +1,12 @@
-import argparse
 import atexit
 import ctypes
 import logging
-import os
 import re
 import sys
 import time
+import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from multiprocessing import freeze_support
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -17,10 +16,9 @@ import pandas as pd
 
 
 CNJ_PATTERN = re.compile(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b")
+CNJ_CLEAN_PATTERN = re.compile(r"\b\d{20}\b")
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
-
-EXCEL_CELL_LIMIT = 32767
-TRUNCATION_WARNING = " ... [AVISO: TEXTO TRUNCADO DEVIDO AO LIMITE DE 32.767 CARACTERES DO EXCEL]"
+UNDERSCORES_PATTERN = re.compile(r"_{3,}")
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +35,7 @@ class ExtractionResult:
 
 
 def setup_console() -> None:
-    if os.name != "nt":
+    if sys.platform != "win32":
         return
 
     kernel32 = ctypes.windll.kernel32
@@ -72,20 +70,14 @@ def setup_console() -> None:
         pass
 
 
-def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
-    if quiet:
-        level = logging.WARNING
-    elif verbose:
-        level = logging.DEBUG
-    else:
-        level = logging.INFO
-
+def setup_logging() -> None:
     logging.basicConfig(
-        level=level,
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)]
     )
+    warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def clean_extracted_text(text: str) -> str:
@@ -93,14 +85,8 @@ def clean_extracted_text(text: str) -> str:
         return ""
 
     text = ILLEGAL_XML_CHARS.sub("", text)
-    text = re.sub(r"_{3,}", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    if len(text) > EXCEL_CELL_LIMIT:
-        allowed_length = max(0, EXCEL_CELL_LIMIT - len(TRUNCATION_WARNING))
-        text = text[:allowed_length] + TRUNCATION_WARNING
-
-    return text
+    text = UNDERSCORES_PATTERN.sub(" ", text)
+    return " ".join(text.split())
 
 
 def find_cnj_number(text: str) -> str:
@@ -108,7 +94,20 @@ def find_cnj_number(text: str) -> str:
         return "Não localizado"
 
     match = CNJ_PATTERN.search(text)
-    return match.group(0) if match else "Não localizado"
+    if match:
+        return match.group(0)
+
+    match_clean = CNJ_CLEAN_PATTERN.search(text)
+    if match_clean:
+        d = match_clean.group(0)
+        return f"{d[:7]}-{d[7:9]}.{d[9:13]}.{d[13]}.{d[14:16]}.{d[16:]}"
+
+    if len(text) < 300:
+        digits = "".join(c for c in text if c.isdigit())
+        if len(digits) == 20:
+            return f"{digits[:7]}-{digits[7:9]}.{digits[9:13]}.{digits[13]}.{digits[14:16]}.{digits[16:]}"
+
+    return "Não localizado"
 
 
 def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
@@ -157,28 +156,26 @@ def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
             error_message=str(e),
             filename=pdf_path.name
         )
+    finally:
+        try:
+            fitz.tools.shrink_memory()
+        except Exception:
+            pass
 
 
-def get_pdf_files(input_dir: Path, recursive: bool = False) -> List[Path]:
-    file_iterator = input_dir.rglob("*") if recursive else input_dir.glob("*")
-
-    return sorted(
-        file_path
-        for file_path in file_iterator
-        if file_path.is_file() and file_path.suffix.lower() == ".pdf"
-    )
+def get_pdf_files(input_dir: Path) -> List[Path]:
+    return [
+        f for f in input_dir.glob("*.pdf")
+        if f.is_file()
+    ]
 
 
-def process_directory(
-    input_dir: Path,
-    recursive: bool = False,
-    max_workers: Optional[int] = None
-) -> List[Dict[str, str]]:
+def process_directory(input_dir: Path) -> List[Dict[str, str]]:
     if not input_dir.is_dir():
         logger.error(f"O diretório informado não existe: {input_dir}")
         return []
 
-    pdf_files = get_pdf_files(input_dir, recursive=recursive)
+    pdf_files = get_pdf_files(input_dir)
     total = len(pdf_files)
 
     logger.info(f"Total de PDFs encontrados: {total}")
@@ -190,44 +187,61 @@ def process_directory(
     counters = {"success": 0, "encrypted": 0, "empty": 0, "error": 0}
     processed = 0
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        future_to_pdf = {
-            executor.submit(extract_text_from_pdf, pdf_path): pdf_path
-            for pdf_path in pdf_files
-        }
+    use_parallel = total > 2
 
-        for future in as_completed(future_to_pdf):
-            pdf_path = future_to_pdf[future]
-            processed += 1
+    def handle_result(result: ExtractionResult) -> None:
+        nonlocal processed
+        processed += 1
+        counters[result.status] += 1
 
-            try:
-                result = future.result()
-                counters[result.status] += 1
+        if result.status == "success":
+            dataset.append(result.data)
+            logger.debug(f"Processado com sucesso: {result.filename}")
+        elif result.status == "encrypted":
+            logger.warning(
+                f"[{processed}/{total}] PDF criptografado, ignorado: {result.filename}"
+            )
+        elif result.status == "empty":
+            logger.warning(
+                f"[{processed}/{total}] Sem texto extraível: {result.filename}"
+            )
+        elif result.status == "error":
+            logger.error(
+                f"[{processed}/{total}] Erro ao processar {result.filename}: {result.error_message}"
+            )
 
-                if result.status == "success":
-                    dataset.append(result.data)
-                    logger.info(
-                        f"[{processed}/{total}] Processado com sucesso: {result.filename}"
-                    )
-                elif result.status == "encrypted":
-                    logger.warning(
-                        f"[{processed}/{total}] PDF criptografado, ignorado: {result.filename}"
-                    )
-                elif result.status == "empty":
-                    logger.warning(
-                        f"[{processed}/{total}] Sem texto extraível: {result.filename}"
-                    )
-                elif result.status == "error":
+        log_interval = max(1, min(50, total // 10))
+        if processed % log_interval == 0 or processed == total:
+            logger.info(f"Progresso: {processed}/{total} arquivos ({processed * 100 // total}%)")
+
+    if use_parallel:
+        with ProcessPoolExecutor() as executor:
+            future_to_pdf = {
+                executor.submit(extract_text_from_pdf, pdf_path): pdf_path
+                for pdf_path in pdf_files
+            }
+
+            for future in as_completed(future_to_pdf):
+                pdf_path = future_to_pdf[future]
+                try:
+                    result = future.result()
+                    handle_result(result)
+                except Exception as e:
+                    processed += 1
+                    counters["error"] += 1
                     logger.error(
-                        f"[{processed}/{total}] Erro ao processar "
-                        f"{result.filename}: {result.error_message}"
+                        f"[{processed}/{total}] Falha crítica ao processar {pdf_path.name}: {e}"
                     )
-
+    else:
+        for pdf_path in pdf_files:
+            try:
+                result = extract_text_from_pdf(pdf_path)
+                handle_result(result)
             except Exception as e:
+                processed += 1
                 counters["error"] += 1
                 logger.error(
-                    f"[{processed}/{total}] Falha crítica ao processar "
-                    f"{pdf_path.name}: {e}"
+                    f"[{processed}/{total}] Falha crítica ao processar {pdf_path.name}: {e}"
                 )
 
     dataset.sort(key=lambda item: item["Título do Arquivo"].lower())
@@ -266,105 +280,33 @@ def export_to_excel(data: List[Dict[str, str]], output_path: Path) -> None:
         logger.info(f"Arquivo Excel gerado com sucesso em: {output_path.resolve()}")
 
     except PermissionError:
-        logger.error(
+        logger.exception(
             f"Não foi possível gravar o arquivo Excel. "
             f"Verifique se ele está aberto: {output_path}"
         )
 
     except Exception as e:
-        logger.error(f"Falha crítica ao gravar o arquivo Excel: {e}")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Extrai texto e número CNJ de arquivos PDF e exporta para Excel."
-    )
-
-    parser.add_argument(
-        "--input",
-        type=Path,
-        default=Path("./pdfs"),
-        help="Diretório contendo os PDFs."
-    )
-
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("./processos_extraidos.xlsx"),
-        help="Caminho do arquivo Excel de saída."
-    )
-
-    parser.add_argument(
-        "--recursive",
-        action="store_true",
-        help="Busca PDFs também em subpastas."
-    )
-
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=None,
-        help="Número de processos paralelos."
-    )
-
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Sobrescreve o arquivo Excel de saída caso já exista."
-    )
-
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Exibe logs detalhados (nível DEBUG)."
-    )
-
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="Exibe apenas avisos e erros."
-    )
-
-    return parser.parse_args()
+        logger.exception(f"Falha crítica ao gravar o arquivo Excel: {e}")
 
 
 def main() -> None:
     setup_console()
+    setup_logging()
 
-    args = parse_args()
+    input_path = Path("./pdfs")
+    output_path = Path("./processos_extraidos.xlsx")
 
-    if args.verbose and args.quiet:
-        print("[ERRO] Não é possível usar --verbose e --quiet ao mesmo tempo.")
-        return
-
-    setup_logging(verbose=args.verbose, quiet=args.quiet)
-
-    if args.workers is not None and args.workers < 1:
-        logger.error("O parâmetro --workers deve ser maior ou igual a 1.")
-        return
-
-    if args.output.exists() and not args.force:
-        logger.error(
-            f"O arquivo de saída já existe: {args.output.resolve()}\n"
-            f"Use --force para sobrescrever."
-        )
-        return
-
-    args.input.mkdir(parents=True, exist_ok=True)
+    input_path.mkdir(parents=True, exist_ok=True)
 
     start_time = time.perf_counter()
 
     logger.info("--- Extração de PDFs e Geração de Excel ---")
-    logger.info(f"Diretório de entrada: {args.input.resolve()}")
-    logger.info(f"Arquivo de saída: {args.output.resolve()}")
+    logger.info(f"Diretório de entrada: {input_path.resolve()}")
+    logger.info(f"Arquivo de saída: {output_path.resolve()}")
 
-    extracted_data = process_directory(
-        input_dir=args.input,
-        recursive=args.recursive,
-        max_workers=args.workers
-    )
+    extracted_data = process_directory(input_dir=input_path)
 
-    export_to_excel(extracted_data, args.output)
+    export_to_excel(extracted_data, output_path)
 
     end_time = time.perf_counter()
 

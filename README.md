@@ -2,60 +2,32 @@
 
 Automação em Python para extrair texto de documentos jurídicos em PDF, identificar o número do processo no padrão CNJ e consolidar os dados em uma planilha Excel.
 
-O projeto foi criado para processar arquivos em lote dentro de uma pasta, limpar o texto extraído e gerar um arquivo `.xlsx` organizado com as informações principais.
-
 ## Funcionalidades
 
 - Extrai texto de arquivos PDF usando PyMuPDF.
-- Localiza automaticamente números de processo no padrão CNJ.
-- Usa o nome do arquivo como fallback quando o CNJ não é encontrado no conteúdo.
-- Remove caracteres inválidos que podem quebrar a geração do Excel.
-- Normaliza espaços e quebras de linha.
-- Evita erro no Excel ao limitar textos acima de 32.767 caracteres por célula.
-- Processa múltiplos PDFs em paralelo para melhorar a performance.
-- Aceita arquivos com extensão `.pdf`, `.PDF` e variações similares.
-- Permite busca opcional em subpastas.
-- Gera uma planilha Excel com aba chamada `Dados`.
-- Exibe uma janela de console com logs mesmo quando executado como `.pyw`.
-- Diferencia PDFs criptografados, vazios e com erro no log de processamento.
-- Exibe progresso individual `[N/TOTAL]` e resumo detalhado ao final.
+- Localiza automaticamente números de processo no padrão CNJ (com ou sem formatação).
+- Robustez CNJ: Busca por sequência de 20 dígitos e formata automaticamente no padrão `0000000-00.0000.0.00.0000` caso esteja sem pontos/hífens.
+- Nome do arquivo como fallback caso o CNJ não seja encontrado no conteúdo (com limpeza e formatação de dígitos se houver 20 números).
+- Remoção automática de caracteres inválidos do Excel.
+- Normalização de espaçamento para ganho de performance.
+- Liberação ativa de memória RAM (`fitz.tools.shrink_memory()`) a cada arquivo.
+- Processamento paralelo automático (ProcessPoolExecutor) para múltiplos PDFs.
+- Execução sequencial otimizada para lotes de até 2 PDFs.
+- Gravação direta sobrescrevendo a planilha Excel de saída.
+- Logs otimizados exibindo progresso periódico (a cada 10% ou 50 arquivos) e resumo final.
 
 ## Uso
 
-```bash
-python pdf_to_excel.pyw [opções]
-```
-
-### Opções
-
-| Flag          | Descrição                                              | Padrão                       |
-|---------------|--------------------------------------------------------|------------------------------|
-| `--input`     | Diretório contendo os PDFs                             | `./pdfs`                     |
-| `--output`    | Caminho do arquivo Excel de saída                      | `./processos_extraidos.xlsx` |
-| `--recursive` | Busca PDFs também em subpastas                         | Desativado                   |
-| `--workers`   | Número de processos paralelos                          | Automático (nº de CPUs)      |
-| `--force`     | Sobrescreve o arquivo Excel de saída caso já exista    | Desativado                   |
-| `--verbose`   | Exibe logs detalhados (nível DEBUG)                    | Desativado                   |
-| `--quiet`     | Exibe apenas avisos e erros                            | Desativado                   |
-
-### Exemplos
+Coloque os arquivos PDF na pasta `./pdfs` e execute:
 
 ```bash
-# Uso básico (primeira execução)
 python pdf_to_excel.pyw
-
-# Sobrescrever Excel existente
-python pdf_to_excel.pyw --force
-
-# Buscar em subpastas com 4 workers
-python pdf_to_excel.pyw --recursive --workers 4 --force
-
-# Modo silencioso, apenas avisos e erros
-python pdf_to_excel.pyw --quiet --force
-
-# Diretório e saída personalizados
-python pdf_to_excel.pyw --input ./meus_pdfs --output ./resultado.xlsx --force
 ```
+
+### Comportamento Padrão
+- **Entrada**: Busca arquivos `.pdf` na pasta `./pdfs` (não recursivo).
+- **Saída**: Grava os dados em `./processos_extraidos.xlsx` (sobrescreve arquivos existentes).
+- **Paralelismo**: Usa processos paralelos automaticamente caso existam mais de 2 arquivos.
 
 ## Dependências
 
