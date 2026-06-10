@@ -6,7 +6,6 @@ import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
-from multiprocessing import freeze_support
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -14,24 +13,14 @@ import fitz
 import pandas as pd
 
 
-CNJ_PATTERN = re.compile(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b")
-CNJ_CLEAN_PATTERN = re.compile(r"\b\d{20}\b")
+FIND_CNJ_PATTERN = re.compile(
+    r"\b(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})\b|(\d{20})"
+)
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 UNDERSCORES_PATTERN = re.compile(r"_{3,}")
-DIGITS_20_PATTERN = re.compile(r"\d{20}")
+WS_PATTERN = re.compile(r"\s+")
 
 logger = logging.getLogger(__name__)
-
-_console_handles: List = []
-
-
-def _cleanup_console() -> None:
-    for handle in _console_handles:
-        try:
-            handle.close()
-        except OSError:
-            pass
-    _console_handles.clear()
 
 
 @dataclass
@@ -57,15 +46,11 @@ def setup_console() -> None:
 
     try:
         stdout_handle = open("CONOUT$", "w", encoding="utf-8", buffering=1)
-        stderr_handle = open("CONOUT$", "w", encoding="utf-8", buffering=1)
         stdin_handle = open("CONIN$", "r", encoding="utf-8")
 
         sys.stdout = stdout_handle
-        sys.stderr = stderr_handle
+        sys.stderr = stdout_handle
         sys.stdin = stdin_handle
-
-        _console_handles.clear()
-        _console_handles.extend([stdout_handle, stderr_handle, stdin_handle])
 
     except OSError:
         pass
@@ -86,30 +71,25 @@ def clean_extracted_text(text: str) -> str:
         return ""
     text = ILLEGAL_XML_CHARS.sub("", text)
     text = UNDERSCORES_PATTERN.sub(" ", text)
-    text = re.sub(r"\s+", " ", text)
+    text = WS_PATTERN.sub(" ", text)
     return text.strip()
 
 
 def find_cnj_number(text: str) -> str:
     if not text:
         return "Não localizado"
-    match = CNJ_PATTERN.search(text)
+    match = FIND_CNJ_PATTERN.search(text)
     if match:
-        return match.group(0)
-    match_clean = CNJ_CLEAN_PATTERN.search(text)
-    if match_clean:
-        d = match_clean.group(0)
-        return f"{d[:7]}-{d[7:9]}.{d[9:13]}.{d[13]}.{d[14:16]}.{d[16:]}"
-    match_any = DIGITS_20_PATTERN.search(text)
-    if match_any:
-        d = match_any.group(0)
+        if match.group(1):
+            return match.group(1)
+        d = match.group(2)
         return f"{d[:7]}-{d[7:9]}.{d[9:13]}.{d[13]}.{d[14:16]}.{d[16:]}"
     return "Não localizado"
 
 
 def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
     try:
-        text_content: List[str] = []
+        text_content = []
 
         with fitz.open(pdf_path) as doc:
             if doc.is_encrypted:
@@ -154,10 +134,7 @@ def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
 
 
 def get_pdf_files(input_dir: Path) -> List[Path]:
-    return [
-        f for f in input_dir.glob("*.pdf")
-        if f.is_file()
-    ]
+    return sorted(input_dir.glob("*.pdf"))
 
 
 def process_directory(input_dir: Path) -> List[Dict[str, str]]:
@@ -249,7 +226,7 @@ def process_directory(input_dir: Path) -> List[Dict[str, str]]:
 
 def export_to_excel(data: List[Dict[str, str]], output_path: Path) -> None:
     if not data:
-        logger.error("Nenhum dado válido para exportar. O job abortou.")
+        logger.error("Nenhum dado válido para exportar.")
         return
 
     try:
@@ -257,13 +234,7 @@ def export_to_excel(data: List[Dict[str, str]], output_path: Path) -> None:
 
         df = pd.DataFrame(data)
 
-        columns_order = [
-            "Número do Processo",
-            "Conteúdo",
-            "Título do Arquivo"
-        ]
-
-        df = df.reindex(columns=columns_order, fill_value="")
+        df = df[["Número do Processo", "Conteúdo", "Título do Arquivo"]]
 
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="Dados", index=False)
@@ -308,12 +279,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    freeze_support()
     try:
         main()
     finally:
-        _cleanup_console()
-        try:
-            input("\nPressione ENTER para fechar a janela...")
-        except (EOFError, OSError):
-            pass
+        input("\nPressione ENTER para fechar a janela...")
