@@ -6,14 +6,15 @@ Automação em Python para extrair texto de documentos jurídicos em PDF, identi
 
 - Extrai texto de arquivos PDF usando PyMuPDF.
 - Localiza automaticamente números de processo no padrão CNJ (com ou sem formatação).
-- Robustez CNJ: Busca por 20 dígitos consecutivos e formata automaticamente no padrão `0000000-00.0000.0.00.0000` caso esteja sem formatação.
-- Nome do arquivo verificado primeiro (string curta, mais rápido), conteúdo como fallback.
+- Busca por 20 dígitos consecutivos e formata automaticamente no padrão `0000000-00.0000.0.00.0000` caso esteja sem formatação.
+- Conteúdo do PDF verificado primeiro (mais seguro); nome do arquivo como fallback.
+- Proteção contra Excel/Formula Injection: conteúdo suspeito (iniciado com `=`, `+`, `-`, `@`) é prefixado com `'`.
 - Remoção automática de caracteres inválidos do Excel.
 - Normalização de espaçamento com regex para ganho de performance.
-- Processamento paralelo automático (ProcessPoolExecutor) para múltiplos PDFs.
+- Processamento paralelo automático (ProcessPoolExecutor, limitado a 4 workers) para múltiplos PDFs.
 - Execução sequencial otimizada para lotes de até 2 PDFs.
 - Gravação direta sobrescrevendo a planilha Excel de saída.
-- Logs otimizados exibindo progresso periódico (a cada 10% ou 50 arquivos) e resumo final.
+- Logs exibindo progresso periódico (a cada 10% ou 50 arquivos) e resumo final.
 
 ## Uso
 

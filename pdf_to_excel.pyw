@@ -1,5 +1,5 @@
-import ctypes
 import logging
+import os
 import re
 import sys
 import time
@@ -19,6 +19,7 @@ FIND_CNJ_PATTERN = re.compile(
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 UNDERSCORES_PATTERN = re.compile(r"_{3,}")
 WS_PATTERN = re.compile(r"\s+")
+EXCEL_INJECTION = re.compile(r"^[=+\-@]")
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ def setup_console() -> None:
     if sys.platform != "win32":
         return
 
+    import ctypes
     kernel32 = ctypes.windll.kernel32
 
     if kernel32.GetConsoleWindow():
@@ -111,15 +113,19 @@ def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
                 filename=pdf_path.name
             )
 
-        cnj_number = find_cnj_number(pdf_path.name)
+        cnj_number = find_cnj_number(cleaned_text)
         if cnj_number == "Não localizado":
-            cnj_number = find_cnj_number(cleaned_text)
+            cnj_number = find_cnj_number(pdf_path.name)
+
+        content = cleaned_text
+        if EXCEL_INJECTION.match(content):
+            content = "'" + content
 
         return ExtractionResult(
             status="success",
             data={
                 "Número do Processo": cnj_number,
-                "Conteúdo": cleaned_text,
+                "Conteúdo": content,
                 "Título do Arquivo": pdf_path.name
             },
             filename=pdf_path.name
@@ -183,7 +189,7 @@ def process_directory(input_dir: Path) -> List[Dict[str, str]]:
             logger.info(f"Progresso: {processed}/{total} arquivos ({processed * 100 // total}%)")
 
     if use_parallel:
-        with ProcessPoolExecutor() as executor:
+        with ProcessPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as executor:
             future_to_pdf = {
                 executor.submit(extract_text_from_pdf, pdf_path): pdf_path
                 for pdf_path in pdf_files
@@ -239,7 +245,7 @@ def export_to_excel(data: List[Dict[str, str]], output_path: Path) -> None:
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="Dados", index=False)
 
-        logger.info(f"Arquivo Excel gerado com sucesso em: {output_path.resolve()}")
+        logger.info(f"Arquivo Excel gerado em: {output_path.resolve()}")
 
     except PermissionError:
         logger.exception(
@@ -264,9 +270,8 @@ def main() -> None:
 
     start_time = time.perf_counter()
 
-    logger.info("--- Extração de PDFs e Geração de Excel ---")
-    logger.info(f"Diretório de entrada: {input_path.resolve()}")
-    logger.info(f"Arquivo de saída: {output_path.resolve()}")
+    logger.debug(f"Diretório de entrada: {input_path.resolve()}")
+    logger.debug(f"Arquivo de saída: {output_path.resolve()}")
 
     extracted_data = process_directory(input_dir=input_path)
 
@@ -274,7 +279,7 @@ def main() -> None:
 
     end_time = time.perf_counter()
 
-    logger.info(f"Total exportado: {len(extracted_data)}")
+    logger.debug(f"Total exportado: {len(extracted_data)}")
     logger.info(f"--- Finalizado. Tempo de execução: {end_time - start_time:.3f}s ---")
 
 
