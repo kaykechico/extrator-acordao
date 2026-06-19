@@ -14,7 +14,7 @@ import pandas as pd
 
 
 FIND_CNJ_PATTERN = re.compile(
-    r"\b(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})\b|(\d{20})"
+    r"\b(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})\b|\b(\d{20})\b"
 )
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 UNDERSCORES_PATTERN = re.compile(r"_{3,}")
@@ -65,7 +65,6 @@ def setup_logging() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)]
     )
-    warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def clean_extracted_text(text: str) -> str:
@@ -95,10 +94,11 @@ def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
 
         with fitz.open(pdf_path) as doc:
             if doc.is_encrypted:
-                return ExtractionResult(
-                    status="encrypted",
-                    filename=pdf_path.name
-                )
+                if not doc.authenticate(""):
+                    return ExtractionResult(
+                        status="encrypted",
+                        filename=pdf_path.name
+                    )
 
             for page in doc:
                 page_text = page.get_text("text")
@@ -117,15 +117,11 @@ def extract_text_from_pdf(pdf_path: Path) -> ExtractionResult:
         if cnj_number == "Não localizado":
             cnj_number = find_cnj_number(pdf_path.name)
 
-        content = cleaned_text
-        if EXCEL_INJECTION.match(content):
-            content = "'" + content
-
         return ExtractionResult(
             status="success",
             data={
                 "Número do Processo": cnj_number,
-                "Conteúdo": content,
+                "Conteúdo": cleaned_text,
                 "Título do Arquivo": pdf_path.name
             },
             filename=pdf_path.name
@@ -162,12 +158,17 @@ def process_directory(input_dir: Path) -> List[Dict[str, str]]:
 
     use_parallel = total > 2
 
-    log_interval = max(1, min(50, total // 10))
+    step = max(5, total // 10) if total >= 10 else 1
+    log_interval = min(50, step)
+
+    def log_progress() -> None:
+        if processed % log_interval == 0 or processed == total:
+            logger.info(f"Progresso: {processed}/{total} arquivos ({processed * 100 // total}%)")
 
     def handle_result(result: ExtractionResult) -> None:
         nonlocal processed
         processed += 1
-        counters[result.status] += 1
+        counters[result.status] = counters.get(result.status, 0) + 1
 
         if result.status == "success":
             dataset.append(result.data)
@@ -184,9 +185,21 @@ def process_directory(input_dir: Path) -> List[Dict[str, str]]:
             logger.error(
                 f"[{processed}/{total}] Erro ao processar {result.filename}: {result.error_message}"
             )
+        else:
+            logger.error(
+                f"[{processed}/{total}] Status desconhecido '{result.status}' em: {result.filename}"
+            )
 
-        if processed % log_interval == 0 or processed == total:
-            logger.info(f"Progresso: {processed}/{total} arquivos ({processed * 100 // total}%)")
+        log_progress()
+
+    def handle_failure(pdf_path: Path, exc: BaseException) -> None:
+        nonlocal processed
+        processed += 1
+        counters["error"] += 1
+        logger.error(
+            f"[{processed}/{total}] Falha crítica ao processar {pdf_path.name}: {exc}"
+        )
+        log_progress()
 
     if use_parallel:
         with ProcessPoolExecutor(max_workers=min(4, os.cpu_count() or 1)) as executor:
@@ -201,22 +214,14 @@ def process_directory(input_dir: Path) -> List[Dict[str, str]]:
                     result = future.result()
                     handle_result(result)
                 except Exception as e:
-                    processed += 1
-                    counters["error"] += 1
-                    logger.error(
-                        f"[{processed}/{total}] Falha crítica ao processar {pdf_path.name}: {e}"
-                    )
+                    handle_failure(pdf_path, e)
     else:
         for pdf_path in pdf_files:
             try:
                 result = extract_text_from_pdf(pdf_path)
                 handle_result(result)
             except Exception as e:
-                processed += 1
-                counters["error"] += 1
-                logger.error(
-                    f"[{processed}/{total}] Falha crítica ao processar {pdf_path.name}: {e}"
-                )
+                handle_failure(pdf_path, e)
 
     dataset.sort(key=lambda item: item["Título do Arquivo"].lower())
 
@@ -243,14 +248,26 @@ def export_to_excel(data: List[Dict[str, str]], output_path: Path) -> None:
         df = df[["Número do Processo", "Conteúdo", "Título do Arquivo"]]
 
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-            df.to_excel(writer, sheet_name="Dados", index=False)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"Cell contents too long.*",
+                    category=UserWarning,
+                )
+                df.to_excel(writer, sheet_name="Dados", index=False)
+
+            worksheet = writer.sheets["Dados"]
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    if isinstance(cell.value, str) and EXCEL_INJECTION.match(cell.value):
+                        cell.quotePrefix = True
 
         logger.info(f"Arquivo Excel gerado em: {output_path.resolve()}")
 
-    except PermissionError:
+    except (PermissionError, OSError) as e:
         logger.exception(
             f"Não foi possível gravar o arquivo Excel. "
-            f"Verifique se ele está aberto: {output_path}"
+            f"Verifique se ele está aberto: {output_path} ({type(e).__name__})"
         )
 
     except Exception as e:
@@ -261,12 +278,17 @@ def main() -> None:
     setup_console()
     setup_logging()
 
-    input_path = Path("./pdfs")
-    output_path = Path("./processos_extraidos.xlsx")
+    base_dir = Path(__file__).resolve().parent
+    input_path = base_dir / "pdfs"
+    output_path = base_dir / "processos_extraidos.xlsx"
 
     if not input_path.is_dir():
         input_path.mkdir(parents=True, exist_ok=True)
-        logger.warning(f"Diretório de entrada criado: {input_path.resolve()}. Coloque os PDFs e execute novamente.")
+        logger.warning(
+            f"Diretório de entrada criado: {input_path.resolve()}. "
+            f"Coloque os PDFs e execute novamente."
+        )
+        return
 
     start_time = time.perf_counter()
 
