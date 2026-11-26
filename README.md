@@ -1,59 +1,46 @@
 # Extrator de Acórdãos: PDF para Excel
 
-Automação em Python para extrair texto de documentos jurídicos em PDF e consolidar os dados em uma planilha Excel.
+Lê os acórdãos em PDF de uma pasta e gera uma planilha Excel com uma linha por arquivo: número do processo, outros processos citados e o texto completo.
 
-Requer Windows.
+## Como usar
 
-## Funcionalidades
+1. Instale o Python 3.11+ e as dependências:
 
-- Extrai o texto dos arquivos PDF usando PyMuPDF.
-- Gera uma linha por PDF com as colunas: `Título do Arquivo`, `Número do Processo`, `Outros Processos`, `Status` (Sucesso / Criptografado / Sem texto / Erro), `Detalhes` (mensagem de erro ou aviso) e `Conteúdo`, para rastrear falhas.
-- Textos maiores que o limite de uma célula do Excel (32.767 caracteres) continuam nas colunas `Conteúdo (2)`, `Conteúdo (3)`... — nada é cortado. `Detalhes` informa quando isso acontece.
-- Senha opcional para PDFs criptografados (`-p/--password`).
-- Identifica números de processo no padrão CNJ (validados pelos dígitos verificadores, ISO 7064) e os exporta nas colunas `Número do Processo` e `Outros Processos` (demais citados no texto). O número principal vem do nome do arquivo quando ele contém um CNJ válido; senão, é o primeiro encontrado no texto. Aceita números colados em texto (`nº0808798-...`) ou quebrados por espaço (`0000629- 37.2022...`).
-- `--recursive`: busca PDFs também em subpastas. `Título do Arquivo` mostra o caminho relativo (ex.: `2024\acordao.pdf`).
-- `--dedup`: remove linhas com o mesmo `Número do Processo` e mantém a primeira. Processos apenas citados (`Outros Processos`) não contam.
-- `--ocr`: aplica OCR nas páginas sem texto (PDFs escaneados). Requer o [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) instalado com o idioma português (`por`). Se o OCR falhar, o texto das demais páginas é mantido e o motivo aparece em `Detalhes`.
-- Proteção contra Formula Injection: todas as células são gravadas como texto; as iniciadas com `=`, `+`, `-`, `@`, tab ou carriage return recebem prefixo de texto (`'`) do Excel.
-- Remove caracteres inválidos do Excel e normaliza o espaçamento do texto.
-- Processamento paralelo automático (até 8 processos), dimensionado pelo volume: cerca de 1 processo a cada 10 arquivos ou 250 páginas; lotes pequenos rodam em sequência, que é mais rápido que abrir processos. Com `--ocr`, 1 processo por arquivo.
-- Verifica antes de processar se o Excel de saída está aberto/bloqueado.
-- Logs periódicos de progresso (a cada 10%, até 50 arquivos) e resumo final.
-- Código de saída `0` em sucesso (ou pasta sem PDFs) e `1` em falha (útil para agendamentos).
+   ```powershell
+   pip install -r requirements.txt
+   ```
 
-## Uso
+2. Coloque os PDFs na pasta `pdfs`, ao lado do script. Se ela não existir, a primeira execução cria.
+3. Dê duplo clique em `pdf_to_excel.pyw` (Windows) ou execute `python3 pdf_to_excel.pyw` (Linux).
 
-Coloque os arquivos PDF na pasta `pdfs` e dê duplo clique em `pdf_to_excel.pyw`, ou execute:
+A planilha `processos_extraidos.xlsx` aparece na mesma pasta. Se ela estiver aberta no Excel, o script avisa e para antes de processar.
 
-```powershell
-python pdf_to_excel.pyw
-```
+## O que sai na planilha
 
-### Comportamento Padrão
-- **Entrada**: Busca arquivos `.pdf` na pasta `./pdfs` (não recursivo). Se a pasta padrão não existir, ela é criada. Um diretório informado com `-i` que não existe é tratado como erro.
-- **Saída**: Grava os dados em `./processos_extraidos.xlsx` (sobrescreve arquivos existentes).
-- **Paralelismo**: Usa processos paralelos automaticamente quando o volume compensa (a partir de ~20 arquivos ou ~500 páginas).
-- **Janela**: Ao abrir com duplo clique, a janela aguarda ENTER antes de fechar. No terminal, o script termina direto.
+| Coluna | Conteúdo |
+|---|---|
+| Título do Arquivo | Nome do PDF |
+| Número do Processo | CNJ do nome do arquivo; se o nome não tiver, o primeiro CNJ válido do texto |
+| Outros Processos | Demais números CNJ citados no texto |
+| Status | Sucesso, Criptografado, Sem texto ou Erro |
+| Detalhes | Motivo do erro ou aviso |
+| Conteúdo | Texto completo do acórdão |
 
-### Opções de linha de comando
+Todo número CNJ passa pela conferência do dígito verificador. Texto acima de 32.767 caracteres, o limite de uma célula do Excel, continua nas colunas `Conteúdo (2)`, `Conteúdo (3)` e assim por diante.
+
+## Opções
 
 ```powershell
-python pdf_to_excel.pyw [-i DIRETORIO] [-o ARQUIVO.xlsx] [-p [SENHA]] [--recursive] [--dedup] [--ocr]
+python pdf_to_excel.pyw [-i PASTA] [-o ARQUIVO.xlsx] [-p [SENHA]] [--recursive] [--dedup] [--ocr]
 ```
 
-- `-i, --input`: diretório com os PDFs (padrão: `./pdfs`).
-- `-o, --output`: arquivo Excel de saída (padrão: `./processos_extraidos.xlsx`).
-- `-p, --password`: senha para abrir PDFs criptografados. Use `-p` sem valor para digitar a senha sem eco (ela não fica no histórico do terminal). Em execuções agendadas, sem teclado, use `-p SENHA`.
-- `--recursive`: busca PDFs também em subpastas.
-- `--dedup`: remove linhas duplicadas do mesmo `Número do Processo`. Mantém a primeira.
-- `--ocr`: OCR nas páginas sem texto (requer Tesseract).
+| Opção | O que faz |
+|---|---|
+| `-i` | Pasta dos PDFs (padrão: `pdfs`) |
+| `-o` | Planilha de saída (padrão: `processos_extraidos.xlsx`) |
+| `-p` | Senha de PDFs protegidos. Sem valor, pede a senha sem mostrar o que você digita |
+| `--recursive` | Inclui subpastas |
+| `--dedup` | Mantém uma linha por número de processo |
+| `--ocr` | Lê páginas escaneadas. Requer o [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) com o idioma português |
 
-## Dependências
-
-- Python 3.11+
-- [PyMuPDF](https://pymupdf.readthedocs.io/) (`fitz`) 1.27.2.2
-- [openpyxl](https://openpyxl.readthedocs.io/) 3.1.5
-
-```powershell
-pip install -r requirements.txt
-```
+O script termina com código `0` quando dá certo e `1` quando falha, o que permite usá-lo em tarefas agendadas.

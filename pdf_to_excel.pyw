@@ -209,9 +209,9 @@ def extract_text_from_pdf(
 
 
 def get_pdf_files(input_dir: Path, recursive: bool = False) -> List[Path]:
-    pattern = "**/*.pdf" if recursive else "*.pdf"
+    pattern = "**/*" if recursive else "*"
     return sorted(
-        p for p in input_dir.glob(pattern) if p.suffix.lower() == ".pdf"
+        p for p in input_dir.glob(pattern) if p.suffix.lower() == ".pdf" and p.is_file()
     )
 
 
@@ -328,7 +328,9 @@ def process_directory(
     jobs = [(p, str(p.relative_to(input_dir))) for p in pdf_files]
 
     if workers > 1:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
+        with ProcessPoolExecutor(
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn")
+        ) as executor:
             future_to_name = {
                 executor.submit(extract_text_from_pdf, pdf_path, password, name, ocr): name
                 for pdf_path, name in jobs
