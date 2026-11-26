@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import fitz
+import pymupdf as fitz
 
 
 FIND_CNJ_PATTERN = re.compile(
