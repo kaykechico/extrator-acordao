@@ -63,6 +63,36 @@ def test_dedup_rows_keeps_first_and_all_not_found():
     assert [r["id"] for r in mod.dedup_rows(rows)] == [1, 3, 4]
 
 
+def _make_pdf(path, text, password=""):
+    doc = mod.fitz.open()
+    doc.new_page().insert_text((72, 72), text)
+    if password:
+        doc.save(path, encryption=mod.fitz.PDF_ENCRYPT_AES_256, user_pw=password, owner_pw=password)
+    else:
+        doc.save(path)
+    doc.close()
+
+
+def test_process_directory_reads_real_pdfs(tmp_path):
+    _make_pdf(tmp_path / "a.pdf", f"Acórdão do processo {VALID_A}, citando {VALID_B}.")
+    _make_pdf(tmp_path / f"{VALID_B} - acordao.PDF", "Texto sem número de processo.")
+    _make_pdf(tmp_path / "c.pdf", f"Processo {VALID_A}", password="segredo")
+    (tmp_path / "d.pdf").write_bytes(b"isto nao e um pdf")
+
+    rows = {r["Título do Arquivo"]: r for r in mod.process_directory(tmp_path)}
+
+    assert rows["a.pdf"]["Status"] == "Sucesso"
+    assert rows["a.pdf"]["Número do Processo"] == VALID_A
+    assert rows["a.pdf"]["Outros Processos"] == VALID_B
+    assert "citando" in rows["a.pdf"]["Conteúdo"]
+    assert rows[f"{VALID_B} - acordao.PDF"]["Número do Processo"] == VALID_B
+    assert rows["c.pdf"]["Status"] == "Criptografado"
+    assert rows["d.pdf"]["Status"] == "Erro"
+
+    unlocked = {r["Título do Arquivo"]: r for r in mod.process_directory(tmp_path, password="segredo")}
+    assert unlocked["c.pdf"]["Número do Processo"] == VALID_A
+
+
 def test_export_to_excel_splits_long_content_and_blocks_formulas(tmp_path):
     from openpyxl import load_workbook
 

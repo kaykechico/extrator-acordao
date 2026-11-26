@@ -1,2 +1,2 @@
 openpyxl==3.1.5
-pymupdf==2.1
+pymupdf==2.2

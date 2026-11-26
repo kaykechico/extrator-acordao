@@ -47,6 +47,10 @@ python pdf_to_excel.pyw [-i PASTA] [-o ARQUIVO.xlsx] [-p [SENHA]] [--recursive] 
 
 O script termina com código `0` quando dá certo e `1` quando falha, o que permite usá-lo em tarefas agendadas.
 
+## Licença
+
+O código deste repositório é MIT. A leitura de PDF usa o [PyMuPDF](https://pymupdf.readthedocs.io/), que tem licença AGPL-3.0 (ou licença comercial da Artifex): quem distribuir ou oferecer a ferramenta como serviço também segue as regras da AGPL.
+
 ## Testes
 
 ```powershell
