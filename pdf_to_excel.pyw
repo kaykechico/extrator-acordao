@@ -17,7 +17,7 @@ import fitz
 
 
 FIND_CNJ_PATTERN = re.compile(
-    r"\b\d{7}(?:-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}|\d{13})\b"
+    r"(?<!\d)\d{7}(?:-\s?\d{2}\.\s?\d{4}\.\s?\d\.\s?\d{2}\.\s?\d{4}|\d{13})(?!\d)"
 )
 ILLEGAL_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 UNDERSCORES_PATTERN = re.compile(r"_{3,}")
@@ -133,6 +133,7 @@ def find_cnj_numbers(text: str) -> List[str]:
         return []
     found, seen = [], set()
     for candidate in FIND_CNJ_PATTERN.findall(text):
+        candidate = "".join(candidate.split())
         if len(candidate) == 20:
             d = candidate
             candidate = f"{d[:7]}-{d[7:9]}.{d[9:13]}.{d[13]}.{d[14:16]}.{d[16:]}"
@@ -183,15 +184,16 @@ def extract_text_from_pdf(
                 filename=display_name
             )
 
-        cnj_numbers = find_cnj_numbers(cleaned_text)
-        if not cnj_numbers:
-            cnj_numbers = find_cnj_numbers(pdf_path.name)
+        text_numbers = find_cnj_numbers(cleaned_text)
+        name_numbers = find_cnj_numbers(pdf_path.name)
+        main_number = (name_numbers or text_numbers or [CNJ_NOT_FOUND])[0]
+        other_numbers = [n for n in text_numbers if n != main_number]
 
         return ExtractionResult(
             status="success",
             data={
-                "Número do Processo": cnj_numbers[0] if cnj_numbers else CNJ_NOT_FOUND,
-                "Outros Processos": "; ".join(cnj_numbers[1:]),
+                "Número do Processo": main_number,
+                "Outros Processos": "; ".join(other_numbers),
                 "Conteúdo": cleaned_text,
             },
             error_message=ocr_error,

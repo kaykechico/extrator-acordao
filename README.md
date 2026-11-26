@@ -2,13 +2,15 @@
 
 Automação em Python para extrair texto de documentos jurídicos em PDF e consolidar os dados em uma planilha Excel.
 
+Requer Windows.
+
 ## Funcionalidades
 
 - Extrai o texto dos arquivos PDF usando PyMuPDF.
 - Gera uma linha por PDF com as colunas: `Título do Arquivo`, `Número do Processo`, `Outros Processos`, `Status` (Sucesso / Criptografado / Sem texto / Erro), `Detalhes` (mensagem de erro ou aviso) e `Conteúdo`, para rastrear falhas.
 - Textos maiores que o limite de uma célula do Excel (32.767 caracteres) continuam nas colunas `Conteúdo (2)`, `Conteúdo (3)`... — nada é cortado. `Detalhes` informa quando isso acontece.
 - Senha opcional para PDFs criptografados (`-p/--password`).
-- Identifica números de processo no padrão CNJ (validados pelos dígitos verificadores, ISO 7064) e os exporta nas colunas `Número do Processo` (primeiro encontrado) e `Outros Processos` (demais citados no texto).
+- Identifica números de processo no padrão CNJ (validados pelos dígitos verificadores, ISO 7064) e os exporta nas colunas `Número do Processo` e `Outros Processos` (demais citados no texto). O número principal vem do nome do arquivo quando ele contém um CNJ válido; senão, é o primeiro encontrado no texto. Aceita números colados em texto (`nº0808798-...`) ou quebrados por espaço (`0000629- 37.2022...`).
 - `--recursive`: busca PDFs também em subpastas. `Título do Arquivo` mostra o caminho relativo (ex.: `2024\acordao.pdf`).
 - `--dedup`: remove linhas com o mesmo `Número do Processo` e mantém a primeira. Processos apenas citados (`Outros Processos`) não contam.
 - `--ocr`: aplica OCR nas páginas sem texto (PDFs escaneados). Requer o [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) instalado com o idioma português (`por`). Se o OCR falhar, o texto das demais páginas é mantido e o motivo aparece em `Detalhes`.
@@ -21,9 +23,9 @@ Automação em Python para extrair texto de documentos jurídicos em PDF e conso
 
 ## Uso
 
-Coloque os arquivos PDF na pasta `./pdfs` e execute:
+Coloque os arquivos PDF na pasta `pdfs` e dê duplo clique em `pdf_to_excel.pyw`, ou execute:
 
-```bash
+```powershell
 python pdf_to_excel.pyw
 ```
 
@@ -35,7 +37,7 @@ python pdf_to_excel.pyw
 
 ### Opções de linha de comando
 
-```bash
+```powershell
 python pdf_to_excel.pyw [-i DIRETORIO] [-o ARQUIVO.xlsx] [-p [SENHA]] [--recursive] [--dedup] [--ocr]
 ```
 
@@ -52,6 +54,6 @@ python pdf_to_excel.pyw [-i DIRETORIO] [-o ARQUIVO.xlsx] [-p [SENHA]] [--recursi
 - [PyMuPDF](https://pymupdf.readthedocs.io/) (`fitz`) 1.27.2.2
 - [openpyxl](https://openpyxl.readthedocs.io/) 3.1.5
 
-```bash
+```powershell
 pip install -r requirements.txt
 ```
