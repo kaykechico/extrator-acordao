@@ -1,5 +1,7 @@
 # Extrator de Acórdãos: PDF para Excel
 
+[![Testes](https://github.com/kaykechico/extrator-acordao/actions/workflows/tests.yml/badge.svg)](https://github.com/kaykechico/extrator-acordao/actions/workflows/tests.yml)
+
 Lê os acórdãos em PDF de uma pasta e gera uma planilha Excel com uma linha por arquivo: número do processo, outros processos citados e o texto completo.
 
 ## Como usar
@@ -44,3 +46,10 @@ python pdf_to_excel.pyw [-i PASTA] [-o ARQUIVO.xlsx] [-p [SENHA]] [--recursive] 
 | `--ocr` | Lê páginas escaneadas. Requer o [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) com o idioma português |
 
 O script termina com código `0` quando dá certo e `1` quando falha, o que permite usá-lo em tarefas agendadas.
+
+## Testes
+
+```powershell
+pip install -r requirements.txt pytest
+python -m pytest tests
+```
